@@ -1,112 +1,98 @@
-import 'dart:async';
-
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../constants/env.dart';
-import '../errors/app_exception.dart';
 import '../storage/token_storage.dart';
+import 'auth_event_bus.dart';
+import 'interceptors/auth_interceptor.dart';
+import 'interceptors/error_mapping_interceptor.dart';
+import 'interceptors/logging_interceptor.dart';
+import 'interceptors/request_id_interceptor.dart';
+import 'interceptors/retry_interceptor.dart';
+import 'interceptors/token_refresh_interceptor.dart';
 
-/// Provides a configured Dio instance for the app.
-final apiClientProvider = Provider<Dio>((ref) {
-  final storage = ref.watch(tokenStorageProvider);
-  return ApiClient.create(storage: storage);
-});
-
+/// Centralized Dio client for Rent95.
+///
+/// ### Interceptor order matters
+///
+/// Dio calls request interceptors in the order they're added, and response/
+/// error interceptors in **reverse** order. We install them so that:
+///
+/// ```
+/// Request path:  RequestId → Auth → Logging → (network)
+/// Response path: (network) → Logging → TokenRefresh → Retry → ErrorMapping
+/// ```
+///
+/// That ordering matters because:
+///
+/// 1. **TokenRefreshInterceptor must run before ErrorMappingInterceptor** on
+///    error — otherwise the 401 gets wrapped in an `UnauthorizedException`
+///    before we ever get a chance to refresh and retry.
+///
+/// 2. **RetryInterceptor must run between refresh and error mapping** so that
+///    if the refresh succeeded and the retry *still* fails, it gets one more
+///    chance under the retry policy — and only after all that do we surface
+///    the typed [AppException] to feature code.
+///
+/// 3. **RequestId + Auth run first on request** so every outgoing call —
+///    including refresh-retries — carries a fresh trace id and the correct
+///    Authorization header.
 class ApiClient {
-  static Dio create({required TokenStorage storage}) {
+  /// Build a fully-configured Dio instance.
+  ///
+  /// [enableLogging] defaults to `Env.isDev` — flip explicitly if you want
+  /// noisy logs in a specific test.
+  static Dio create({
+    required TokenStorage storage,
+    required AuthEventBus events,
+    bool? enableLogging,
+  }) {
     final dio = Dio(
       BaseOptions(
         baseUrl: Env.apiBaseUrl,
         connectTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 20),
         sendTimeout: const Duration(seconds: 20),
-        headers: {'Accept': 'application/json'},
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        // Don't throw on 4xx — we want interceptors to see the response so
+        // ErrorMappingInterceptor can produce nice typed errors.
+        validateStatus: (status) => status != null && status >= 200 && status < 300,
       ),
     );
 
-    dio.interceptors.add(_AuthInterceptor(storage));
-    dio.interceptors.add(_ErrorInterceptor());
-    if (Env.isDev) {
-      dio.interceptors.add(
-        LogInterceptor(
-          requestBody: true,
-          responseBody: true,
-          logPrint: (obj) {
-            // ignore: avoid_print
-            print(obj);
-          },
-        ),
-      );
-    }
+    // Order: request-side runs top-to-bottom; response/error-side runs
+    // bottom-to-top. See class docs above.
+    dio.interceptors.addAll([
+      RequestIdInterceptor(),
+      AuthInterceptor(storage),
+      TokenRefreshInterceptor(
+        storage: storage,
+        events: events,
+        baseUrl: Env.apiBaseUrl,
+      ),
+      RetryInterceptor(dio: dio),
+      ErrorMappingInterceptor(),
+      if (enableLogging ?? Env.isDev) LoggingInterceptor(),
+    ]);
+
     return dio;
   }
 }
 
-class _AuthInterceptor extends Interceptor {
-  _AuthInterceptor(this._storage);
-  final TokenStorage _storage;
+// -----------------------------------------------------------------------------
+// Riverpod providers
+// -----------------------------------------------------------------------------
 
-  @override
-  Future<void> onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
-    final token = await _storage.readAccessToken();
-    if (token != null && token.isNotEmpty) {
-      options.headers['Authorization'] = 'Bearer $token';
-    }
-    handler.next(options);
-  }
-}
-
-class _ErrorInterceptor extends Interceptor {
-  @override
-  void onError(DioException err, ErrorInterceptorHandler handler) {
-    final ex = _toAppException(err);
-    handler.reject(
-      DioException(
-        requestOptions: err.requestOptions,
-        error: ex,
-        response: err.response,
-        type: err.type,
-        message: ex.message,
-      ),
-    );
-  }
-
-  AppException _toAppException(DioException err) {
-    if (err.type == DioExceptionType.cancel) {
-      return const CancelledException();
-    }
-    if (err.type == DioExceptionType.connectionTimeout ||
-        err.type == DioExceptionType.receiveTimeout ||
-        err.type == DioExceptionType.sendTimeout ||
-        err.type == DioExceptionType.connectionError) {
-      return NetworkException(err.message ?? 'Connection failed', cause: err);
-    }
-    final status = err.response?.statusCode;
-    final data = err.response?.data;
-    final serverMessage = (data is Map && data['message'] is String)
-        ? data['message'] as String
-        : null;
-    switch (status) {
-      case 401:
-        return const UnauthorizedException();
-      case 403:
-        return ForbiddenException(serverMessage ?? 'Forbidden');
-      case 404:
-        return NotFoundException(serverMessage ?? 'Not found');
-      case 422:
-        final fields = <String, String>{};
-        if (data is Map && data['errors'] is Map) {
-          (data['errors'] as Map).forEach((k, v) {
-            fields[k.toString()] = v is List ? v.join(', ') : v.toString();
-          });
-        }
-        return ValidationException(
-          serverMessage ?? 'Please check your input.',
-          fields: fields,
-        );
-      default:
-        return ServerException(serverMessage ?? 'Server error');
-    }
-  }
-}
+/// The one-and-only Dio the whole app should use. Feature repositories depend
+/// on this. Kept as a plain `Provider` (not autoDispose) so the connection
+/// pool lives across screens.
+final apiClientProvider = Provider<Dio>((ref) {
+  final storage = ref.watch(tokenStorageProvider);
+  final events = ref.watch(authEventBusProvider);
+  final dio = ApiClient.create(storage: storage, events: events);
+  ref.onDispose(() => dio.close(force: true));
+  return dio;
+});

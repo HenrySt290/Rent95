@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/env.dart';
+import '../../../core/network/auth_event_bus.dart';
 import '../../../core/storage/token_storage.dart';
 import '../../../shared/models/user.dart';
 import '../../../shared/services/mock_store.dart';
@@ -42,9 +43,23 @@ class AuthState {
 
 class AuthController extends StateNotifier<AuthState> {
   AuthController(this._ref) : super(const AuthState()) {
+    _forceLogoutSub = _ref.read(authEventBusProvider).stream.listen((event) {
+      if (event == AuthEvent.forceLogout && mounted) {
+        // Refresh token was rejected — drop session state so the router
+        // bounces the user back to the login screen on the next redirect.
+        state = const AuthState(initialized: true);
+      }
+    });
     _bootstrap();
   }
   final Ref _ref;
+  StreamSubscription<AuthEvent>? _forceLogoutSub;
+
+  @override
+  void dispose() {
+    _forceLogoutSub?.cancel();
+    super.dispose();
+  }
 
   Future<void> _bootstrap() async {
     final storage = _ref.read(tokenStorageProvider);
