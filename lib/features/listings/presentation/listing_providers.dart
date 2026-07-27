@@ -2,29 +2,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../shared/models/listing.dart';
 import '../../../shared/models/review.dart';
-import '../../../shared/services/mock_store.dart';
+import '../../listings/data/listing_providers.dart';
 
 final listingByIdProvider =
     FutureProvider.autoDispose.family<Listing?, String>((ref, id) async {
-  final store = ref.read(mockStoreProvider);
-  await Future<void>.delayed(const Duration(milliseconds: 200));
-  final match = store.listings.where((l) => l.id == id);
-  return match.isEmpty ? null : match.first;
+  try {
+    return await ref.watch(listingRepositoryProvider).byId(id);
+  } catch (_) {
+    return null;
+  }
 });
 
 final reviewsForProductProvider =
     FutureProvider.autoDispose.family<List<Review>, String>((ref, productId) async {
-  final store = ref.read(mockStoreProvider);
-  return store.reviews.where((r) => r.productId == productId).toList();
+  return ref.watch(listingRepositoryProvider).reviewsFor(productId);
 });
 
 final similarListingsProvider =
     FutureProvider.autoDispose.family<List<Listing>, String>((ref, id) async {
-  final store = ref.read(mockStoreProvider);
-  final base = store.listings.where((l) => l.id == id).firstOrNull;
-  if (base == null) return [];
-  return store.listings
-      .where((l) => l.id != id && l.categoryId == base.categoryId)
-      .take(4)
-      .toList();
+  return ref.watch(listingRepositoryProvider).similar(id);
 });

@@ -5,11 +5,13 @@ import 'package:table_calendar/table_calendar.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/errors/app_exception.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/models/listing.dart';
 import '../../../shared/models/order.dart';
-import '../../../shared/services/mock_store.dart';
 import '../../listings/presentation/listing_providers.dart';
+import '../../orders/data/order_providers.dart';
+import '../../orders/data/order_repository.dart';
 
 class BookingRequestScreen extends ConsumerStatefulWidget {
   const BookingRequestScreen({super.key, required this.listingId});
@@ -69,11 +71,12 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
                 border: Border.all(color: AppColors.border),
               ),
               child: Row(children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                  child: Image.network(listing.images.first,
-                      width: 56, height: 56, fit: BoxFit.cover),
-                ),
+                if (listing.images.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    child: Image.network(listing.images.first,
+                        width: 56, height: 56, fit: BoxFit.cover),
+                  ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -86,7 +89,8 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
                       const SizedBox(height: 4),
                       Text(
                         '${Formatters.currency(listing.price)}${listing.priceUnitLabel}',
-                        style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600),
+                        style: const TextStyle(
+                          color: AppColors.primary, fontWeight: FontWeight.w600),
                       ),
                     ],
                   ),
@@ -119,9 +123,12 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
                   },
                   calendarStyle: const CalendarStyle(
                     rangeHighlightColor: Color(0x333B49DF),
-                    rangeStartDecoration: BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-                    rangeEndDecoration: BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-                    todayDecoration: BoxDecoration(color: Color(0x333B49DF), shape: BoxShape.circle),
+                    rangeStartDecoration:
+                        BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+                    rangeEndDecoration:
+                        BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+                    todayDecoration:
+                        BoxDecoration(color: Color(0x333B49DF), shape: BoxShape.circle),
                   ),
                   headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true),
                 ),
@@ -141,7 +148,8 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
               const SizedBox(width: 16),
               IconButton.outlined(
-                onPressed: _quantity < listing.quantity ? () => setState(() => _quantity++) : null,
+                onPressed:
+                    _quantity < listing.quantity ? () => setState(() => _quantity++) : null,
                 icon: const Icon(Icons.add),
               ),
               const Spacer(),
@@ -197,7 +205,7 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'You won\'t be charged until the seller accepts your request.',
+              "You won't be charged until the seller accepts your request.",
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
             ),
@@ -209,34 +217,48 @@ class _BookingRequestScreenState extends ConsumerState<BookingRequestScreen> {
 
   Future<void> _submit(Listing listing) async {
     setState(() => _submitting = true);
-    final store = ref.read(mockStoreProvider);
-    final order = await store.createOrder(
-      listing: listing,
-      type: switch (listing.listingType) {
-        ListingType.sale => OrderType.purchase,
-        ListingType.service => OrderType.service,
-        _ => OrderType.rental,
-      },
-      start: _start,
-      end: _end,
-      quantity: _quantity,
-    );
+    try {
+      final draft = OrderDraft(
+        productId: listing.id,
+        orderType: switch (listing.listingType) {
+          ListingType.sale => OrderType.purchase,
+          ListingType.service => OrderType.service,
+          _ => OrderType.rental,
+        },
+        quantity: _quantity,
+        startDate: _start,
+        endDate: _end,
+        deliveryMethod: _delivery,
+      );
+      final order = await ref.read(orderRepositoryProvider).create(draft);
+      if (!mounted) return;
+      context.pushReplacement(AppRoutes.checkoutFor(order.id));
+    } on AppException catch (e) {
+      _showError(e.message);
+    } catch (e) {
+      _showError(e.toString());
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  void _showError(String msg) {
     if (!mounted) return;
-    setState(() => _submitting = false);
-    context.pushReplacement(AppRoutes.checkoutFor(order.id));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Widget _priceRow(String label, double amount, {bool bold = false}) {
     final style = TextStyle(
       fontWeight: bold ? FontWeight.w800 : FontWeight.w400,
       fontSize: bold ? 16 : 14,
-      color: bold ? AppColors.textPrimary : AppColors.textPrimary,
     );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Expanded(child: Text(label, style: bold ? style : style.copyWith(color: AppColors.textSecondary))),
+          Expanded(
+              child: Text(label,
+                  style: bold ? style : style.copyWith(color: AppColors.textSecondary))),
           Text(Formatters.currency(amount), style: style),
         ],
       ),

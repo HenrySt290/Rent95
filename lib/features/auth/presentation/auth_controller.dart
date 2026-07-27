@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/constants/env.dart';
+import '../../../core/errors/app_exception.dart';
 import '../../../core/network/auth_event_bus.dart';
-import '../../../core/storage/token_storage.dart';
 import '../../../shared/models/user.dart';
-import '../../../shared/services/mock_store.dart';
+import '../data/auth_providers.dart';
+import '../data/auth_repository.dart';
 
 /// High-level auth state for the whole app.
 class AuthState {
@@ -52,8 +52,11 @@ class AuthController extends StateNotifier<AuthState> {
     });
     _bootstrap();
   }
+
   final Ref _ref;
   StreamSubscription<AuthEvent>? _forceLogoutSub;
+
+  AuthRepository get _repo => _ref.read(authRepositoryProvider);
 
   @override
   void dispose() {
@@ -62,80 +65,66 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   Future<void> _bootstrap() async {
-    final storage = _ref.read(tokenStorageProvider);
-    final token = await storage.readAccessToken();
-    if (token != null && token.isNotEmpty) {
-      // In mock mode, treat any saved token as "logged in as the mock user".
-      state = state.copyWith(
-        user: _ref.read(mockStoreProvider).currentUser,
-        initialized: true,
-      );
-    } else {
+    try {
+      final user = await _repo.currentUser();
+      state = state.copyWith(user: user, clearUser: user == null, initialized: true);
+    } catch (_) {
       state = state.copyWith(initialized: true);
     }
   }
 
   Future<void> loginWithEmail({required String email, required String password}) async {
     state = state.copyWith(isLoading: true, clearError: true);
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-
-    if (!email.contains('@') || password.length < 4) {
-      state = state.copyWith(
-        isLoading: false,
-        error: 'Enter a valid email and a password of at least 4 characters.',
-      );
-      return;
+    try {
+      final user = await _repo.loginWithEmail(email: email, password: password);
+      state = AuthState(user: user, initialized: true);
+    } on AppException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: _humanize(e));
     }
-
-    if (Env.useMocks) {
-      await _ref.read(tokenStorageProvider).saveTokens(
-            accessToken: 'mock.access.${DateTime.now().millisecondsSinceEpoch}',
-            refreshToken: 'mock.refresh',
-          );
-      state = AuthState(
-        user: _ref.read(mockStoreProvider).currentUser,
-        initialized: true,
-      );
-      return;
-    }
-
-    // TODO: implement real POST /api/auth/login via Dio when backend is live.
-    throw UnimplementedError('Real auth backend not wired yet.');
   }
 
   Future<void> loginWithGoogle() async {
     state = state.copyWith(isLoading: true, clearError: true);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    await _ref.read(tokenStorageProvider).saveTokens(
-          accessToken: 'mock.google.${DateTime.now().millisecondsSinceEpoch}',
-        );
-    state = AuthState(
-      user: _ref.read(mockStoreProvider).currentUser,
-      initialized: true,
-    );
+    try {
+      final user = await _repo.loginWithGoogle();
+      state = AuthState(user: user, initialized: true);
+    } on AppException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: _humanize(e));
+    }
   }
 
   Future<void> register({
     required String fullName,
     required String email,
     required String password,
+    String? phone,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    await _ref.read(tokenStorageProvider).saveTokens(
-          accessToken: 'mock.reg.${DateTime.now().millisecondsSinceEpoch}',
-        );
-    state = AuthState(
-      user: _ref.read(mockStoreProvider).currentUser.copyWith(
-            fullName: fullName,
-            isEmailVerified: false,
-          ),
-      initialized: true,
-    );
+    try {
+      final user = await _repo.register(
+        fullName: fullName,
+        email: email,
+        password: password,
+        phone: phone,
+      );
+      state = AuthState(user: user, initialized: true);
+    } on AppException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: _humanize(e));
+    }
   }
 
   Future<void> logout() async {
-    await _ref.read(tokenStorageProvider).clear();
+    try {
+      await _repo.logout();
+    } catch (_) {
+      // Ignore — local state is authoritative for the UI.
+    }
     state = const AuthState(initialized: true);
   }
 
@@ -143,6 +132,11 @@ class AuthController extends StateNotifier<AuthState> {
     final u = state.user;
     if (u == null) return;
     state = state.copyWith(user: u.copyWith(role: UserRole.seller));
+  }
+
+  String _humanize(Object err) {
+    final s = err.toString();
+    return s.replaceFirst(RegExp(r'^Exception: '), '');
   }
 }
 

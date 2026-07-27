@@ -4,10 +4,13 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/errors/app_exception.dart';
 import '../../../shared/models/category.dart';
 import '../../../shared/models/listing.dart';
-import '../../../shared/services/mock_store.dart';
+import '../../categories/data/category_providers.dart';
 import '../../home/presentation/home_providers.dart';
+import '../data/listing_providers.dart';
+import '../data/listing_repository.dart';
 
 class CreateListingScreen extends ConsumerStatefulWidget {
   const CreateListingScreen({super.key});
@@ -61,37 +64,47 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
 
   Future<void> _submit() async {
     setState(() => _submitting = true);
-    final store = ref.read(mockStoreProvider);
-    final draft = Listing(
-      id: 'temp',
-      ownerId: store.currentUser.id,
-      ownerName: store.currentUser.fullName,
-      title: _title.text.trim(),
-      description: _desc.text.trim(),
-      categoryId: _category!.id,
-      listingType: _type,
-      price: double.parse(_price.text),
-      priceUnit: _unit,
-      securityDeposit: double.tryParse(_deposit.text) ?? 0,
-      currency: 'USD',
-      quantity: _quantity,
-      images: List.of(_images),
-      location: ListingLocation(city: _city.text.trim(), country: 'USA'),
-    );
-    await store.createListing(draft);
+    try {
+      final draft = ListingDraft(
+        title: _title.text.trim(),
+        description: _desc.text.trim(),
+        categoryId: _category!.id,
+        listingType: _type,
+        price: double.parse(_price.text),
+        priceUnit: _unit,
+        securityDeposit: double.tryParse(_deposit.text) ?? 0,
+        currency: 'USD',
+        quantity: _quantity,
+        city: _city.text.trim(),
+        country: 'USA',
+        images: List.of(_images),
+      );
+      await ref.read(listingRepositoryProvider).create(draft);
+      if (!mounted) return;
+      // Bust the home feed caches so the new listing shows up.
+      ref.invalidate(featuredListingsProvider);
+      ref.invalidate(nearbyListingsProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Listing submitted for review 🎉')),
+      );
+      context.go(AppRoutes.sellerDashboard);
+    } on AppException catch (e) {
+      _showError(e.message);
+    } catch (e) {
+      _showError(e.toString());
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  void _showError(String msg) {
     if (!mounted) return;
-    setState(() => _submitting = false);
-    ref.invalidate(featuredListingsProvider);
-    ref.invalidate(nearbyListingsProvider);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Listing submitted for review 🎉')),
-    );
-    context.go(AppRoutes.sellerDashboard);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
   Widget build(BuildContext context) {
-    final cats = ref.watch(categoriesProvider).asData?.value ?? [];
+    final cats = ref.watch(categoriesFutureProvider).asData?.value ?? const [];
 
     return Scaffold(
       appBar: AppBar(
@@ -116,9 +129,7 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
               child: ElevatedButton(
                 onPressed: _submitting
                     ? null
-                    : (_canContinue
-                        ? (_step == 4 ? _submit : _next)
-                        : null),
+                    : (_canContinue ? (_step == 4 ? _submit : _next) : null),
                 child: _submitting
                     ? const SizedBox(
                         height: 22, width: 22,
@@ -140,8 +151,7 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
           'What are you offering?',
           'Choose how buyers will engage with your listing.',
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: 8, runSpacing: 8,
             children: ListingType.values
                 .map((t) => ChoiceChip(
                       label: Text(_typeLabel(t)),
@@ -156,8 +166,7 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
           'Category',
           'Pick the category that best fits.',
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: 8, runSpacing: 8,
             children: cats
                 .map((c) => ChoiceChip(
                       label: Text(c.name),
@@ -194,11 +203,13 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
                 children: [
                   ..._images.map((url) => ClipRRect(
                         borderRadius: BorderRadius.circular(AppRadius.sm),
-                        child: Image.network(url,
-                            width: 80, height: 80, fit: BoxFit.cover),
+                        child: Image.network(url, width: 80, height: 80, fit: BoxFit.cover),
                       )),
                   InkWell(
                     onTap: () => setState(() {
+                      // TODO(images): swap for image_picker + Cloudinary signed upload.
+                      // For now we stub in a random unsplash URL so the API sees a
+                      // valid https:// image on submit.
                       _images.add(
                         'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&sig=${_images.length}',
                       );
@@ -276,7 +287,8 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
             children: [
               TextField(
                 controller: _city,
-                decoration: const InputDecoration(labelText: 'City', prefixIcon: Icon(Icons.place_outlined)),
+                decoration: const InputDecoration(
+                    labelText: 'City', prefixIcon: Icon(Icons.place_outlined)),
               ),
               const SizedBox(height: 20),
               Container(
@@ -299,14 +311,16 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
                       style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
                     ),
                     const SizedBox(height: 8),
-                    Text('\$${_price.text.isEmpty ? '0' : _price.text}${_type == ListingType.sale ? '' : ' / ${_unit.name}'}',
-                        style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700)),
+                    Text(
+                      '\$${_price.text.isEmpty ? '0' : _price.text}${_type == ListingType.sale ? '' : ' / ${_unit.name}'}',
+                      style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700),
+                    ),
                   ],
                 ),
               ),
               const SizedBox(height: 8),
               const Text(
-                'By publishing, you agree to Rent95\'s policies. Your listing will be reviewed within 24 hours.',
+                "By publishing, you agree to Rent95's policies. Your listing will be reviewed within 24 hours.",
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ],

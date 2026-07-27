@@ -7,42 +7,71 @@ import '../../../core/constants/app_routes.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
 import '../../../shared/models/message.dart';
-import '../../../shared/services/mock_store.dart';
 import '../../auth/presentation/auth_controller.dart';
+import '../data/chat_providers.dart';
 
-final conversationsProvider = Provider<List<Conversation>>((ref) {
-  return List.unmodifiable(ref.read(mockStoreProvider).conversations);
+final conversationsProvider = FutureProvider<List<Conversation>>((ref) {
+  return ref.watch(chatRepositoryProvider).listConversations();
 });
 
-final messagesProvider = StateNotifierProvider.family<
-    MessagesController, List<ChatMessage>, String>(
+/// Live messages for a conversation. Uses a `StateNotifier` so we can add
+/// optimistic sends and (later) socket-pushed messages without re-fetching.
+final messagesProvider = StateNotifierProvider.autoDispose
+    .family<MessagesController, AsyncValue<List<ChatMessage>>, String>(
   (ref, conversationId) => MessagesController(ref, conversationId),
 );
 
-class MessagesController extends StateNotifier<List<ChatMessage>> {
+class MessagesController extends StateNotifier<AsyncValue<List<ChatMessage>>> {
   MessagesController(this._ref, this.conversationId)
-      : super(List<ChatMessage>.from(
-          _ref.read(mockStoreProvider).messages[conversationId] ?? [],
-        ));
+      : super(const AsyncValue.loading()) {
+    _load();
+  }
   final Ref _ref;
   final String conversationId;
 
+  Future<void> _load() async {
+    try {
+      final list = await _ref
+          .read(chatRepositoryProvider)
+          .listMessages(conversationId);
+      state = AsyncValue.data(list);
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+    }
+  }
+
   Future<void> send(String text) async {
     if (text.trim().isEmpty) return;
-    final msg = await _ref.read(mockStoreProvider).sendMessage(conversationId, text.trim());
-    state = [...state, msg];
-    // simulate a reply for demo purposes
-    Future.delayed(const Duration(seconds: 2), () {
-      final reply = ChatMessage(
-        id: 'auto_${DateTime.now().microsecondsSinceEpoch}',
-        conversationId: conversationId,
-        senderId: 'usr_owner_1',
-        type: MessageType.text,
-        content: 'Got it, thanks!',
-        createdAt: DateTime.now(),
-      );
-      state = [...state, reply];
-    });
+    final current = state.value ?? const <ChatMessage>[];
+
+    // Optimistic tempMsg — replaced when the real send resolves.
+    final tempId = 'temp_${DateTime.now().microsecondsSinceEpoch}';
+    final me = _ref.read(authControllerProvider).user?.id ?? 'me';
+    final optimistic = ChatMessage(
+      id: tempId,
+      conversationId: conversationId,
+      senderId: me,
+      type: MessageType.text,
+      content: text.trim(),
+      createdAt: DateTime.now(),
+    );
+    state = AsyncValue.data([...current, optimistic]);
+
+    try {
+      final sent = await _ref
+          .read(chatRepositoryProvider)
+          .sendMessage(conversationId, text.trim());
+      state = AsyncValue.data([
+        for (final m in state.value ?? const <ChatMessage>[])
+          if (m.id == tempId) sent else m,
+      ]);
+    } catch (_) {
+      // Rollback the optimistic message on failure.
+      state = AsyncValue.data([
+        for (final m in state.value ?? const <ChatMessage>[])
+          if (m.id != tempId) m,
+      ]);
+    }
   }
 }
 
@@ -51,63 +80,74 @@ class ChatListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final convs = ref.watch(conversationsProvider);
+    final async = ref.watch(conversationsProvider);
     return Scaffold(
       body: SafeArea(
-        child: convs.isEmpty
-            ? const EmptyStateView(
-                icon: Icons.chat_bubble_outline,
-                title: 'No conversations yet',
-                message: 'Message a seller from any listing to start chatting.',
-              )
-            : ListView.separated(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                itemCount: convs.length,
-                separatorBuilder: (_, __) =>
-                    const Divider(height: 1, indent: 72, color: AppColors.border),
-                itemBuilder: (_, i) {
-                  final c = convs[i];
-                  return ListTile(
-                    onTap: () => context.push(AppRoutes.chatDetailFor(c.id)),
-                    leading: CircleAvatar(
-                      radius: 24,
-                      backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                      child: Text(
-                        c.otherUserName.characters.first,
-                        style: const TextStyle(
-                            color: AppColors.primary, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    title: Text(c.otherUserName,
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text(
-                      c.lastMessage ?? '—',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: AppColors.textSecondary),
-                    ),
-                    trailing: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(Formatters.relative(c.updatedAt),
-                            style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                        const SizedBox(height: 4),
-                        if (c.unreadCount > 0)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text('${c.unreadCount}',
-                                style: const TextStyle(color: Colors.white, fontSize: 11)),
+        child: async.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text('$e')),
+          data: (convs) => convs.isEmpty
+              ? const EmptyStateView(
+                  icon: Icons.chat_bubble_outline,
+                  title: 'No conversations yet',
+                  message: 'Message a seller from any listing to start chatting.',
+                )
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    ref.invalidate(conversationsProvider);
+                    await ref.read(conversationsProvider.future);
+                  },
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: convs.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, indent: 72, color: AppColors.border),
+                    itemBuilder: (_, i) {
+                      final c = convs[i];
+                      return ListTile(
+                        onTap: () => context.push(AppRoutes.chatDetailFor(c.id)),
+                        leading: CircleAvatar(
+                          radius: 24,
+                          backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                          child: Text(
+                            c.otherUserName.characters.first,
+                            style: const TextStyle(
+                                color: AppColors.primary, fontWeight: FontWeight.w700),
                           ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+                        ),
+                        title: Text(c.otherUserName,
+                            style: const TextStyle(fontWeight: FontWeight.w700)),
+                        subtitle: Text(
+                          c.lastMessage ?? '—',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: AppColors.textSecondary),
+                        ),
+                        trailing: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(Formatters.relative(c.updatedAt),
+                                style: const TextStyle(
+                                    fontSize: 12, color: AppColors.textSecondary)),
+                            const SizedBox(height: 4),
+                            if (c.unreadCount > 0)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primary,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text('${c.unreadCount}',
+                                    style: const TextStyle(color: Colors.white, fontSize: 11)),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+        ),
       ),
     );
   }
@@ -136,13 +176,21 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   Widget build(BuildContext context) {
     final messages = ref.watch(messagesProvider(widget.conversationId));
     final currentUserId = ref.watch(authControllerProvider).user?.id;
-    final conv = ref.read(mockStoreProvider).conversations
-        .where((c) => c.id == widget.conversationId).firstOrNull;
+    final other = ref.watch(conversationsProvider).maybeWhen(
+          data: (list) => list
+              .where((c) => c.id == widget.conversationId)
+              .map((c) => c.otherUserName)
+              .firstOrNull,
+          orElse: () => null,
+        );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
       }
     });
 
@@ -153,7 +201,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
             radius: 16,
             backgroundColor: AppColors.primary.withValues(alpha: 0.1),
             child: Text(
-              (conv?.otherUserName ?? '?').characters.first,
+              (other ?? '?').characters.first,
               style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700),
             ),
           ),
@@ -162,7 +210,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(conv?.otherUserName ?? 'Chat',
+                Text(other ?? 'Chat',
                     style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 const Text('Online',
                     style: TextStyle(fontSize: 11, color: AppColors.success)),
@@ -173,50 +221,54 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       ),
       body: Column(children: [
         Expanded(
-          child: ListView.builder(
-            controller: _scroll,
-            padding: const EdgeInsets.all(16),
-            itemCount: messages.length,
-            itemBuilder: (_, i) {
-              final m = messages[i];
-              final mine = m.senderId == currentUserId;
-              return Align(
-                alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  constraints: const BoxConstraints(maxWidth: 280),
-                  decoration: BoxDecoration(
-                    color: mine ? AppColors.primary : Colors.white,
-                    borderRadius: BorderRadius.only(
-                      topLeft: const Radius.circular(16),
-                      topRight: const Radius.circular(16),
-                      bottomLeft: Radius.circular(mine ? 16 : 4),
-                      bottomRight: Radius.circular(mine ? 4 : 16),
-                    ),
-                    border: mine ? null : Border.all(color: AppColors.border),
-                  ),
-                  child: Column(
-                    crossAxisAlignment:
-                        mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                    children: [
-                      Text(m.content ?? '',
-                          style: TextStyle(color: mine ? Colors.white : AppColors.textPrimary)),
-                      const SizedBox(height: 4),
-                      Text(
-                        Formatters.time(m.createdAt),
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: mine
-                              ? Colors.white.withValues(alpha: 0.7)
-                              : AppColors.textSecondary,
-                        ),
+          child: messages.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (e, _) => Center(child: Text('$e')),
+            data: (list) => ListView.builder(
+              controller: _scroll,
+              padding: const EdgeInsets.all(16),
+              itemCount: list.length,
+              itemBuilder: (_, i) {
+                final m = list[i];
+                final mine = m.senderId == currentUserId;
+                return Align(
+                  alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    constraints: const BoxConstraints(maxWidth: 280),
+                    decoration: BoxDecoration(
+                      color: mine ? AppColors.primary : Colors.white,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(16),
+                        topRight: const Radius.circular(16),
+                        bottomLeft: Radius.circular(mine ? 16 : 4),
+                        bottomRight: Radius.circular(mine ? 4 : 16),
                       ),
-                    ],
+                      border: mine ? null : Border.all(color: AppColors.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment:
+                          mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                      children: [
+                        Text(m.content ?? '',
+                            style: TextStyle(color: mine ? Colors.white : AppColors.textPrimary)),
+                        const SizedBox(height: 4),
+                        Text(
+                          Formatters.time(m.createdAt),
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: mine
+                                ? Colors.white.withValues(alpha: 0.7)
+                                : AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
         SafeArea(
@@ -257,3 +309,6 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     );
   }
 }
+
+
+

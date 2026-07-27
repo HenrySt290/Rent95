@@ -4,14 +4,15 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/errors/app_exception.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/models/order.dart';
-import '../../../shared/services/mock_store.dart';
+import '../../orders/data/order_providers.dart';
+import '../../payments/data/payment_providers.dart';
 
 final _orderByIdProvider =
-    FutureProvider.autoDispose.family<Order?, String>((ref, id) async {
-  final store = ref.read(mockStoreProvider);
-  return store.orders.where((o) => o.id == id).firstOrNull;
+    FutureProvider.autoDispose.family<Order, String>((ref, id) async {
+  return ref.watch(orderRepositoryProvider).byId(id);
 });
 
 class CheckoutScreen extends ConsumerStatefulWidget {
@@ -32,12 +33,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     return async.when(
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (e, _) => Scaffold(appBar: AppBar(), body: Center(child: Text('$e'))),
-      data: (order) {
-        if (order == null) {
-          return Scaffold(appBar: AppBar(), body: const Center(child: Text('Order not found')));
-        }
-        return _buildBody(order);
-      },
+      data: _buildBody,
     );
   }
 
@@ -114,7 +110,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 1.5 : 1),
+        border: Border.all(
+          color: selected ? AppColors.primary : AppColors.border,
+          width: selected ? 1.5 : 1,
+        ),
         borderRadius: BorderRadius.circular(AppRadius.md),
       ),
       child: RadioListTile<String>(
@@ -137,8 +136,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Expanded(child: Text(label,
-              style: bold ? style : style.copyWith(color: AppColors.textSecondary))),
+          Expanded(
+              child: Text(label,
+                  style: bold ? style : style.copyWith(color: AppColors.textSecondary))),
           Text(Formatters.currency(amount), style: style),
         ],
       ),
@@ -147,12 +147,41 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
 
   Future<void> _pay(Order order) async {
     setState(() => _paying = true);
-    await Future<void>.delayed(const Duration(milliseconds: 900));
-    await ref
-        .read(mockStoreProvider)
-        .updateOrderStatus(order.id, OrderStatus.paid);
+    try {
+      // 1. Ask the backend for a PaymentIntent (via Stripe Connect).
+      final intent = await ref.read(paymentRepositoryProvider).createIntent(order.id);
+
+      // 2. TODO(payments): Present the Stripe PaymentSheet:
+      //
+      //   await Stripe.instance.initPaymentSheet(
+      //     paymentSheetParameters: SetupPaymentSheetParameters(
+      //       paymentIntentClientSecret: intent.clientSecret,
+      //       merchantDisplayName: 'Rent95',
+      //     ),
+      //   );
+      //   await Stripe.instance.presentPaymentSheet();
+      //
+      // For now we simulate a delay so the UX still feels real in mock mode.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      debugPrint('PaymentIntent created: ${intent.paymentIntentId}');
+
+      // 3. Mark the order paid locally. In real mode the Stripe webhook
+      // does this on the server, but we optimistically flip status so the
+      // buyer sees the right thing on the order detail screen.
+      await ref.read(orderRepositoryProvider).updateStatus(order.id, OrderStatus.paid);
+    } on AppException catch (e) {
+      _showError(e.message);
+      setState(() => _paying = false);
+      return;
+    } catch (e) {
+      _showError(e.toString());
+      setState(() => _paying = false);
+      return;
+    }
+
     if (!mounted) return;
     setState(() => _paying = false);
+
     showModalBottomSheet<void>(
       context: context,
       isDismissible: false,
@@ -187,5 +216,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         ),
       ),
     );
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 }

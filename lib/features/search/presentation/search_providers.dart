@@ -2,7 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../shared/models/listing.dart';
-import '../../../shared/services/mock_store.dart';
+import '../../listings/data/listing_providers.dart';
+import '../../listings/data/listing_repository.dart';
 
 @immutable
 class SearchFilters {
@@ -51,14 +52,16 @@ final searchFiltersProvider = StateProvider<SearchFilters>((_) => const SearchFi
 
 final searchResultsProvider = FutureProvider.autoDispose<List<Listing>>((ref) async {
   final f = ref.watch(searchFiltersProvider);
-  final store = ref.read(mockStoreProvider);
-  return store.searchListings(
-    keyword: f.keyword,
-    categoryId: f.categoryId,
-    minPrice: f.minPrice,
-    maxPrice: f.maxPrice,
-    city: f.city,
-    listingType: f.listingType,
-    sort: f.sort,
+  final repo = ref.watch(listingRepositoryProvider);
+  return repo.search(
+    ListingSearchQuery(
+      keyword: f.keyword.isEmpty ? null : f.keyword,
+      categoryId: f.categoryId,
+      minPrice: f.minPrice,
+      maxPrice: f.maxPrice,
+      city: (f.city == null || f.city!.isEmpty) ? null : f.city,
+      listingType: f.listingType,
+      sort: f.sort,
+    ),
   );
 });

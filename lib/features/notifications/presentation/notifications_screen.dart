@@ -5,10 +5,10 @@ import '../../../app/theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
 import '../../../shared/models/notification.dart';
-import '../../../shared/services/mock_store.dart';
+import '../data/notification_providers.dart';
 
-final _notificationsProvider = Provider<List<AppNotification>>((ref) {
-  return List.unmodifiable(ref.read(mockStoreProvider).notifications);
+final _notificationsProvider = FutureProvider<List<AppNotification>>((ref) {
+  return ref.watch(notificationRepositoryProvider).list();
 });
 
 class NotificationsScreen extends ConsumerWidget {
@@ -16,32 +16,39 @@ class NotificationsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final list = ref.watch(_notificationsProvider);
+    final async = ref.watch(_notificationsProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Notifications')),
-      body: list.isEmpty
-          ? const EmptyStateView(
-              icon: Icons.notifications_none,
-              title: 'No notifications',
-              message: 'You\'re all caught up.',
-            )
-          : ListView.separated(
-              itemCount: list.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final n = list[i];
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                    child: Icon(_iconFor(n.type), color: AppColors.primary),
-                  ),
-                  title: Text(n.title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(n.body),
-                  trailing: Text(Formatters.relative(n.createdAt),
-                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                );
-              },
-            ),
+      body: async.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('$e')),
+        data: (list) => list.isEmpty
+            ? const EmptyStateView(
+                icon: Icons.notifications_none,
+                title: 'No notifications',
+                message: "You're all caught up.",
+              )
+            : ListView.separated(
+                itemCount: list.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final n = list[i];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                      child: Icon(_iconFor(n.type), color: AppColors.primary),
+                    ),
+                    title: Text(n.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Text(n.body),
+                    trailing: Text(Formatters.relative(n.createdAt),
+                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                    onTap: () {
+                      ref.read(notificationRepositoryProvider).markRead(n.id);
+                    },
+                  );
+                },
+              ),
+      ),
     );
   }
 

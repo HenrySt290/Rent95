@@ -4,19 +4,19 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/errors/app_exception.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
 import '../../../shared/models/order.dart';
-import '../../../shared/services/mock_store.dart';
-import '../../auth/presentation/auth_controller.dart';
+import '../data/order_providers.dart';
 
-final ordersForCurrentUserProvider = FutureProvider<List<Order>>((ref) async {
-  final store = ref.read(mockStoreProvider);
-  final user = ref.watch(authControllerProvider).user;
-  if (user == null) return [];
-  final l = store.orders.where((o) => o.buyerId == user.id).toList();
-  l.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-  return l;
+final ordersForCurrentUserProvider = FutureProvider<List<Order>>((ref) {
+  return ref.watch(orderRepositoryProvider).myBuyerOrders();
+});
+
+final _orderByIdProvider =
+    FutureProvider.autoDispose.family<Order, String>((ref, id) async {
+  return ref.watch(orderRepositoryProvider).byId(id);
 });
 
 class OrderListScreen extends ConsumerWidget {
@@ -34,13 +34,19 @@ class OrderListScreen extends ConsumerWidget {
             ? const EmptyStateView(
                 icon: Icons.shopping_bag_outlined,
                 title: 'No orders yet',
-                message: 'When you book or buy something, it\'ll show up here.',
+                message: "When you book or buy something, it'll show up here.",
               )
-            : ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: list.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (_, i) => _OrderTile(order: list[i]),
+            : RefreshIndicator(
+                onRefresh: () async {
+                  ref.invalidate(ordersForCurrentUserProvider);
+                  await ref.read(ordersForCurrentUserProvider.future);
+                },
+                child: ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: list.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (_, i) => _OrderTile(order: list[i]),
+                ),
               ),
       ),
     );
@@ -67,10 +73,13 @@ class _OrderTile extends StatelessWidget {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: Image.network(
-                order.productImage, width: 64, height: 64, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(width: 64, height: 64, color: AppColors.border),
-              ),
+              child: order.productImage.isEmpty
+                  ? Container(width: 64, height: 64, color: AppColors.border)
+                  : Image.network(
+                      order.productImage, width: 64, height: 64, fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) =>
+                          Container(width: 64, height: 64, color: AppColors.border),
+                    ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -132,14 +141,15 @@ class OrderDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final order = ref
-        .read(mockStoreProvider)
-        .orders
-        .where((o) => o.id == id)
-        .firstOrNull;
-    if (order == null) {
-      return Scaffold(appBar: AppBar(), body: const Center(child: Text('Order not found')));
-    }
+    final async = ref.watch(_orderByIdProvider(id));
+    return async.when(
+      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
+      error: (e, _) => Scaffold(appBar: AppBar(), body: Center(child: Text('$e'))),
+      data: (order) => _buildBody(context, ref, order),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, WidgetRef ref, Order order) {
     return Scaffold(
       appBar: AppBar(title: Text('Order ${order.orderNumber}')),
       body: ListView(
@@ -153,10 +163,11 @@ class OrderDetailScreen extends ConsumerWidget {
               border: Border.all(color: AppColors.border),
             ),
             child: Row(children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                child: Image.network(order.productImage, width: 72, height: 72, fit: BoxFit.cover),
-              ),
+              if (order.productImage.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  child: Image.network(order.productImage, width: 72, height: 72, fit: BoxFit.cover),
+                ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -181,7 +192,7 @@ class OrderDetailScreen extends ConsumerWidget {
               Formatters.currency(order.totalAmount)),
           const SizedBox(height: 16),
           OutlinedButton.icon(
-            onPressed: () => context.push(AppRoutes.chatDetailFor('conv_001')),
+            onPressed: () => context.push(AppRoutes.messages),
             icon: const Icon(Icons.chat_bubble_outline),
             label: const Text('Message seller'),
           ),
@@ -189,13 +200,22 @@ class OrderDetailScreen extends ConsumerWidget {
           if (order.status == OrderStatus.active)
             ElevatedButton.icon(
               onPressed: () async {
-                await ref.read(mockStoreProvider)
-                    .updateOrderStatus(order.id, OrderStatus.completed);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Order marked as completed. Please leave a review.')),
-                  );
-                  context.pop();
+                try {
+                  await ref
+                      .read(orderRepositoryProvider)
+                      .updateStatus(order.id, OrderStatus.completed);
+                  ref.invalidate(_orderByIdProvider(order.id));
+                  ref.invalidate(ordersForCurrentUserProvider);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Order marked as completed. Please leave a review.')),
+                    );
+                    context.pop();
+                  }
+                } on AppException catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+                  }
                 }
               },
               icon: const Icon(Icons.check_circle_outline),
