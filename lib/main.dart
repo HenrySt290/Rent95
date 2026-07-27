@@ -3,32 +3,33 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
 import 'core/network/socket_lifecycle.dart';
+import 'core/services/push_registrar.dart';
+import 'core/services/push_service.dart';
 import 'core/services/stripe_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Stripe SDK — safe to call unconditionally. If STRIPE_PUBLISHABLE_KEY is
-  // unset (mock mode) it's a friendly no-op and the checkout screen will
-  // surface a "not configured" message if the user reaches it.
+  // Stripe SDK — safe no-op if STRIPE_PUBLISHABLE_KEY is unset.
   await StripeService.instance.init();
 
-  // Real integrations left as clearly-marked TODOs:
-  //   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  //   await Hive.initFlutter();
+  // Firebase + FCM — safe no-op if google-services.json / GoogleService-Info.plist
+  // aren't in place. See docs/FCM_SETUP.md for the one-time platform config.
+  await PushService.instance.init();
 
   runApp(const ProviderScope(child: _AppBootstrap()));
 }
 
-/// Tiny wrapper widget whose only job is to spin up the [socketLifecycleProvider]
-/// so it starts watching auth state *before* any screen mounts. Without this,
-/// the socket controller wouldn't exist until something else `ref.watch`ed it.
+/// Wires up the always-on side-effect providers (socket lifecycle, push
+/// registrar) before any screen mounts. Without this, they wouldn't exist
+/// until something else `ref.watch`ed them.
 class _AppBootstrap extends ConsumerWidget {
   const _AppBootstrap();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     ref.watch(socketLifecycleProvider);
+    ref.watch(pushRegistrarProvider);
     return const Rent95App();
   }
 }
