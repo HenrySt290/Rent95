@@ -52,8 +52,10 @@ class CategoryChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(AppRadius.lg),
       child: Container(
-        width: 82,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        // Intrinsic-width with sensible bounds (audit M6). Was fixed 82px
+        // which clipped longer category names like "Construction Equipment".
+        constraints: const BoxConstraints(minWidth: 82, maxWidth: 128),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
         decoration: BoxDecoration(
           color: selected ? AppColors.primary : Colors.white,
           borderRadius: BorderRadius.circular(AppRadius.lg),
@@ -62,6 +64,7 @@ class CategoryChip extends StatelessWidget {
           ),
         ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               CategoryIconMap.iconFor(iconName),
@@ -73,9 +76,11 @@ class CategoryChip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
+                height: 1.2,
                 color: selected ? Colors.white : AppColors.textPrimary,
               ),
             ),

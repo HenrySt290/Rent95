@@ -44,7 +44,9 @@ class SavedListingsScreen extends ConsumerWidget {
                     crossAxisCount: 2,
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: 0.72,
+                    // Fixed cell height replaces childAspectRatio — see
+                    // docs/DESIGN_AUDIT_FIXES.md R1.
+                    mainAxisExtent: 300,
                   ),
                   itemBuilder: (_, i) => ListingCard(
                     listing: list[i],

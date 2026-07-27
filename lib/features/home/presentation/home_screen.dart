@@ -24,6 +24,19 @@ class HomeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     final favs = ref.watch(favoriteIdsProvider);
 
+    // Audit M4: surface silent favorite-toggle failures via a snackbar.
+    // The optimistic rollback happens automatically in the controller;
+    // this is only the visible acknowledgement to the user.
+    ref.listen<AsyncValue<String>>(favoriteErrorsProvider, (previous, next) {
+      final msg = next.valueOrNull;
+      if (msg == null) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      if (messenger == null) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(msg)));
+    });
+
     return Scaffold(
       body: SafeArea(
         child: RefreshIndicator(
@@ -84,7 +97,13 @@ class HomeScreen extends ConsumerWidget {
                 child: SizedBox(
                   height: 110,
                   child: categories.when(
-                    loading: () => const Center(child: CircularProgressIndicator()),
+                    loading: () => ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: 6,
+                      separatorBuilder: (_, __) => const SizedBox(width: 10),
+                      itemBuilder: (_, __) => const CategoryChipShimmer(),
+                    ),
                     error: (e, _) => Center(child: Text('$e')),
                     data: (cats) => ListView.separated(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -111,17 +130,17 @@ class HomeScreen extends ConsumerWidget {
                 ),
               ),
               featured.when(
-                loading: () => const SliverToBoxAdapter(
+                loading: () => SliverToBoxAdapter(
                   child: SizedBox(
-                    height: 260,
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 16),
-                      child: Row(
-                        children: [
-                          Expanded(child: ListingCardShimmer()),
-                          SizedBox(width: 12),
-                          Expanded(child: ListingCardShimmer()),
-                        ],
+                    height: 296,
+                    child: ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: 4,
+                      separatorBuilder: (_, __) => const SizedBox(width: 12),
+                      itemBuilder: (_, __) => const SizedBox(
+                        width: 220,
+                        child: ListingCardShimmer(compact: true),
                       ),
                     ),
                   ),
@@ -129,7 +148,10 @@ class HomeScreen extends ConsumerWidget {
                 error: (e, _) => SliverToBoxAdapter(child: Center(child: Text('$e'))),
                 data: (list) => SliverToBoxAdapter(
                   child: SizedBox(
-                    height: 260,
+                    // Slightly taller than before to accommodate the audit's
+                    // 2-line title fix — otherwise a real title like "Tesla
+                    // Model 3 — Long Range" clips at compact widths.
+                    height: 296,
                     child: ListView.separated(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       scrollDirection: Axis.horizontal,
@@ -159,9 +181,22 @@ class HomeScreen extends ConsumerWidget {
                 ),
               ),
               nearby.when(
-                loading: () => const SliverPadding(
-                  padding: EdgeInsets.all(16),
-                  sliver: SliverToBoxAdapter(child: ListingCardShimmer()),
+                loading: () => SliverPadding(
+                  padding: const EdgeInsets.all(16),
+                  sliver: SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                      // Fixed cell height matches the data grid below — no
+                      // layout jolt when the data lands (audit R2).
+                      mainAxisExtent: 300,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (_, __) => const ListingCardShimmer(),
+                      childCount: 6,
+                    ),
+                  ),
                 ),
                 error: (e, _) => SliverToBoxAdapter(child: Center(child: Text('$e'))),
                 data: (list) {
@@ -181,7 +216,12 @@ class HomeScreen extends ConsumerWidget {
                         crossAxisCount: 2,
                         mainAxisSpacing: 12,
                         crossAxisSpacing: 12,
-                        childAspectRatio: 0.72,
+                        // Fixed cell height (audit R1). Was
+                        // `childAspectRatio: 0.72` which forced a rigid
+                        // aspect and overflowed on 2-line titles. 300px
+                        // holds a 4:3 image + 2-line title + meta comfortably
+                        // on 375px viewports.
+                        mainAxisExtent: 300,
                       ),
                       itemCount: list.length,
                       itemBuilder: (context, i) => ListingCard(

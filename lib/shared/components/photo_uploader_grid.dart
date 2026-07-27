@@ -51,10 +51,12 @@ class _PhotoUploaderGridState extends ConsumerState<PhotoUploaderGrid> {
 
   Future<void> _pickAndUpload(ImageSource source) async {
     setState(() => _error = null);
+    String? pickedPath;
     try {
       final picker = ref.read(imagePickerServiceProvider);
       final picked = await picker.pickAndCrop(source: source);
       if (picked == null) return;
+      pickedPath = picked.path;
 
       setState(() => _inFlight[picked.path] = 0);
 
@@ -70,16 +72,24 @@ class _PhotoUploaderGridState extends ConsumerState<PhotoUploaderGrid> {
           );
 
       if (!mounted) return;
+      // Scoped removal — only clear THIS upload's ghost tile (audit R5).
+      // Previously `_inFlight.clear()` wiped every concurrent upload's UI
+      // state on any single failure, making other in-flight uploads
+      // disappear from the grid.
       setState(() => _inFlight.remove(picked.path));
       widget.onChange([...widget.urls, uploaded.secureUrl]);
     } on StateError catch (e) {
-      // From the size guard in ImagePickerService.
-      setState(() => _error = e.message);
-    } catch (e) {
+      // Size guard from ImagePickerService.
+      if (!mounted) return;
       setState(() {
-        _error = 'Upload failed: $e';
-        // Any lingering ghost thumbnail clears on error too.
-        _inFlight.clear();
+        if (pickedPath != null) _inFlight.remove(pickedPath);
+        _error = e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        if (pickedPath != null) _inFlight.remove(pickedPath);
+        _error = 'Upload failed. Tap "Add photo" to try again.';
       });
     }
   }
@@ -220,11 +230,20 @@ class _UploadingTile extends StatelessWidget {
               child: SizedBox(
                 width: 32,
                 height: 32,
-                child: CircularProgressIndicator(
-                  value: progress,
-                  strokeWidth: 3,
-                  color: Colors.white,
-                  backgroundColor: Colors.white24,
+                // Animate the progress transition so the ring doesn't
+                // "snap" from 0 → 95% on a fast connection (audit M3).
+                // When `progress == 0` we render an indeterminate spinner
+                // so the tile never looks frozen at "about to start".
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: progress),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOut,
+                  builder: (_, v, __) => CircularProgressIndicator(
+                    value: v <= 0 ? null : v,
+                    strokeWidth: 3,
+                    color: Colors.white,
+                    backgroundColor: Colors.white24,
+                  ),
                 ),
               ),
             ),

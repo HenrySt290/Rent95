@@ -101,7 +101,7 @@ class _ListingDetailBody extends ConsumerWidget {
                     Text(listing.location.short,
                         style: const TextStyle(color: AppColors.textSecondary)),
                     const Spacer(),
-                    const Icon(Icons.star, color: AppColors.warning, size: 16),
+                    const Icon(Icons.star, color: AppColors.starGold, size: 16),
                     const SizedBox(width: 4),
                     Text(
                       '${listing.ratingAverage.toStringAsFixed(1)}  (${listing.reviewCount})',
@@ -214,7 +214,7 @@ class _ListingDetailBody extends ConsumerWidget {
                                             Text(r.reviewerName,
                                                 style: const TextStyle(fontWeight: FontWeight.w600)),
                                             const Spacer(),
-                                            const Icon(Icons.star, color: AppColors.warning, size: 14),
+                                            const Icon(Icons.star, color: AppColors.starGold, size: 14),
                                             Text(' ${r.rating}',
                                                 style: const TextStyle(fontWeight: FontWeight.w600)),
                                           ]),

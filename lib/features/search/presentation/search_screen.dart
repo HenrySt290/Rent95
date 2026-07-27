@@ -98,7 +98,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   padding: const EdgeInsets.all(16),
                   itemCount: 6,
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2, mainAxisSpacing: 12, crossAxisSpacing: 12, childAspectRatio: 0.72,
+                    crossAxisCount: 2, mainAxisSpacing: 12, crossAxisSpacing: 12,
+                    mainAxisExtent: 300,
                   ),
                   itemBuilder: (_, __) => const ListingCardShimmer(),
                 ),
@@ -115,7 +116,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     padding: const EdgeInsets.all(16),
                     itemCount: list.length,
                     gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2, mainAxisSpacing: 12, crossAxisSpacing: 12, childAspectRatio: 0.72,
+                      crossAxisCount: 2, mainAxisSpacing: 12, crossAxisSpacing: 12,
+                      mainAxisExtent: 300,
                     ),
                     itemBuilder: (_, i) => ListingCard(
                       listing: list[i],

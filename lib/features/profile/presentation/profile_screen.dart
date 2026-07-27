@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../shared/components/initial_avatar.dart';
 import '../../auth/presentation/auth_controller.dart';
 
 class ProfileScreen extends ConsumerWidget {
@@ -20,17 +21,10 @@ class ProfileScreen extends ConsumerWidget {
           children: [
             const SizedBox(height: 20),
             Center(
-              child: CircleAvatar(
+              child: InitialAvatar(
+                name: user.fullName,
+                imageUrl: user.profileImageUrl,
                 radius: 44,
-                backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                child: Text(
-                  user.fullName.characters.first,
-                  style: const TextStyle(
-                    fontSize: 32,
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
               ),
             ),
             const SizedBox(height: 12),

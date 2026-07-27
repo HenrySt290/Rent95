@@ -10,6 +10,8 @@ import '../../../core/network/socket_client.dart';
 import '../../../core/network/socket_events.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
+import '../../../shared/components/initial_avatar.dart';
+import '../../../shared/components/loading_shimmer.dart';
 import '../../../shared/models/message.dart';
 import '../../auth/presentation/auth_controller.dart';
 import '../data/chat_providers.dart';
@@ -207,7 +209,13 @@ class ChatListScreen extends ConsumerWidget {
     return Scaffold(
       body: SafeArea(
         child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
+          loading: () => ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: 6,
+            separatorBuilder: (_, __) =>
+                const Divider(height: 1, indent: 72, color: AppColors.border),
+            itemBuilder: (_, __) => const ChatTileShimmer(),
+          ),
           error: (e, _) => Center(child: Text('$e')),
           data: (convs) => convs.isEmpty
               ? const EmptyStateView(
@@ -227,45 +235,58 @@ class ChatListScreen extends ConsumerWidget {
                         const Divider(height: 1, indent: 72, color: AppColors.border),
                     itemBuilder: (_, i) {
                       final c = convs[i];
+                      final hasUnread = c.unreadCount > 0;
                       return ListTile(
                         onTap: () => context.push(AppRoutes.chatDetailFor(c.id)),
-                        leading: CircleAvatar(
+                        // Robust avatar: crash-proof on empty names, falls
+                        // back through remote image → initial (audit R3).
+                        leading: InitialAvatar(
+                          name: c.otherUserName,
+                          imageUrl: c.otherUserAvatarUrl,
                           radius: 24,
-                          backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                          child: Text(
-                            c.otherUserName.characters.first,
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w700,
-                            ),
+                        ),
+                        title: Text(
+                          c.otherUserName.trim().isEmpty
+                              ? 'Rent95 user'
+                              : c.otherUserName,
+                          style: TextStyle(
+                            // Unread rows get heavier titles for scan (audit M5).
+                            fontWeight: hasUnread ? FontWeight.w800 : FontWeight.w600,
+                            height: 1.3,
                           ),
                         ),
-                        title: Text(c.otherUserName,
-                            style: const TextStyle(fontWeight: FontWeight.w700)),
                         subtitle: Text(
                           c.lastMessage ?? '—',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: AppColors.textSecondary),
+                          style: TextStyle(
+                            // Unread → darker + heavier snippet (audit M5).
+                            color: hasUnread
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary,
+                            fontWeight:
+                                hasUnread ? FontWeight.w600 : FontWeight.w400,
+                            height: 1.4,
+                          ),
                         ),
                         trailing: Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(Formatters.relative(c.updatedAt),
-                                style: const TextStyle(
-                                    fontSize: 12, color: AppColors.textSecondary)),
-                            const SizedBox(height: 4),
-                            if (c.unreadCount > 0)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary,
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text('${c.unreadCount}',
-                                    style: const TextStyle(color: Colors.white, fontSize: 11)),
+                            Text(
+                              Formatters.relative(c.updatedAt),
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.3,
+                                color: hasUnread
+                                    ? AppColors.primary
+                                    : AppColors.textSecondary,
+                                fontWeight:
+                                    hasUnread ? FontWeight.w600 : FontWeight.w400,
                               ),
+                            ),
+                            const SizedBox(height: 4),
+                            if (hasUnread) _UnreadBadge(count: c.unreadCount),
                           ],
                         ),
                       );
@@ -334,21 +355,18 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Row(children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-            child: Text(
-              (other ?? '?').characters.first,
-              style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700),
-            ),
-          ),
+          InitialAvatar(name: other, radius: 16),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(other ?? 'Chat',
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                Text(
+                  other == null || other.trim().isEmpty ? 'Chat' : other,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, height: 1.3),
+                ),
                 _PresenceLine(isTyping: isTyping),
               ],
             ),
@@ -540,6 +558,40 @@ class _TypingBubbleState extends State<_TypingBubble> with SingleTickerProviderS
               }),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+/// Unread-count pill with overflow guard.
+///
+/// Audit R4: previous inline rendering of `'${count}'` blew container widths
+/// at ≥100 unread. We cap the label at `99+`, enforce a min square footprint
+/// so the pill stays circular at count=1, and use height: 1.0 so the digits
+/// visually centre in the badge.
+class _UnreadBadge extends StatelessWidget {
+  const _UnreadBadge({required this.count});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Center(
+        child: Text(
+          count > 99 ? '99+' : '$count',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            height: 1.0,
+          ),
         ),
       ),
     );

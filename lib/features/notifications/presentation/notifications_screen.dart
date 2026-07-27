@@ -5,6 +5,7 @@ import '../../../app/theme.dart';
 import '../../../core/network/socket_client.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
+import '../../../shared/components/loading_shimmer.dart';
 import '../../../shared/models/notification.dart';
 import '../data/notification_providers.dart';
 
@@ -44,7 +45,11 @@ class NotificationsScreen extends ConsumerWidget {
         ],
       ),
       body: async.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => ListView.separated(
+          itemCount: 8,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (_, __) => const NotificationTileShimmer(),
+        ),
         error: (e, _) => Center(child: Text('$e')),
         data: (list) => list.isEmpty
             ? const EmptyStateView(
