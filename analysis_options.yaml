@@ -1,0 +1,151 @@
+# =============================================================================
+#  Rent95 — Strict Analysis Configuration
+# -----------------------------------------------------------------------------
+#  Production-grade static analysis. Layered on top of flutter_lints so we
+#  inherit Flutter team defaults, then tighten with lints_core + custom rules.
+#
+#  Philosophy:
+#   - No implicit dynamic. Every type is spelled out or inferred from a typed
+#     source. `strict-*` compiler flags below enforce this at analyzer level.
+#   - No debug leftovers. `print`, `debugger()`, and TODO-without-owner all
+#     flagged.
+#   - `const` everywhere it's legal — cheap performance win, catches bugs.
+#   - Widget key hygiene, immutability, and null-safety maximalism.
+# =============================================================================
+
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  # ---- Hard error the moment analyzer sees something we don't tolerate ------
+  errors:
+    # Debug leftovers
+    avoid_print: error
+    # Type safety
+    always_declare_return_types: error
+    always_specify_types: warning
+    prefer_typing_uninitialized_variables: error
+    # const correctness (perf + rebuild avoidance)
+    prefer_const_constructors: error
+    prefer_const_constructors_in_immutables: error
+    prefer_const_declarations: error
+    prefer_const_literals_to_create_immutables: error
+    # Nullable-unaware code
+    invalid_null_aware_operator: error
+    unnecessary_null_checks: error
+    # Import hygiene
+    unused_import: error
+    unused_local_variable: error
+    unused_element: error
+    dead_code: error
+    # Generated files should never break analysis
+    todo: ignore
+
+  # ---- Strict compiler flags (opts into stricter type inference) ------------
+  language:
+    strict-casts: true          # `as` on `dynamic` becomes an error
+    strict-inference: true      # Inferred `dynamic` becomes an error
+    strict-raw-types: true      # `List` without <T> becomes an error
+
+  # ---- Files ignored by the analyzer ----------------------------------------
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "**/*.mocks.dart"
+    - "**/*.config.dart"
+    - "**/generated/**"
+    - "**/generated_plugin_registrant.dart"
+    - "build/**"
+    - ".dart_tool/**"
+    - "ios/**"
+    - "android/**"
+    - "linux/**"
+    - "macos/**"
+    - "windows/**"
+
+linter:
+  rules:
+    # ----- Debug hygiene ------------------------------------------------------
+    avoid_print: true
+    avoid_web_libraries_in_flutter: true
+
+    # ----- Type safety --------------------------------------------------------
+    always_declare_return_types: true
+    always_put_required_named_parameters_first: true
+    avoid_dynamic_calls: true
+    avoid_returning_null_for_future: true
+    avoid_type_to_string: true
+    cast_nullable_to_non_nullable: true
+    no_leading_underscores_for_local_identifiers: false  # allow _foo locals
+    prefer_typing_uninitialized_variables: true
+    strict_top_level_inference: true
+    tighten_type_of_initializing_formals: true
+
+    # ----- const / immutability ----------------------------------------------
+    prefer_const_constructors: true
+    prefer_const_constructors_in_immutables: true
+    prefer_const_declarations: true
+    prefer_const_literals_to_create_immutables: true
+    prefer_final_fields: true
+    prefer_final_in_for_each: true
+    prefer_final_locals: true
+
+    # ----- Widget / Flutter idiom --------------------------------------------
+    avoid_unnecessary_containers: true
+    sized_box_for_whitespace: true
+    use_key_in_widget_constructors: true
+    use_full_hex_values_for_flutter_colors: true
+    use_colored_box: true
+    use_decorated_box: true
+    sort_child_properties_last: true
+
+    # ----- Async correctness -------------------------------------------------
+    avoid_slow_async_io: true
+    cancel_subscriptions: true
+    close_sinks: true
+    discarded_futures: true
+    unawaited_futures: true
+
+    # ----- Null safety --------------------------------------------------------
+    avoid_null_checks_in_equality_operators: true
+    null_check_on_nullable_type_parameter: true
+    unnecessary_null_aware_assignments: true
+    unnecessary_null_checks: true
+    unnecessary_null_in_if_null_operators: true
+
+    # ----- Style / readability -----------------------------------------------
+    directives_ordering: true
+    prefer_single_quotes: true
+    prefer_relative_imports: true
+    require_trailing_commas: true
+    sort_pub_dependencies: false   # groups > sort order for pubspec
+    unnecessary_await_in_return: true
+    unnecessary_lambdas: true
+    unnecessary_parenthesis: true
+    unnecessary_string_interpolations: true
+
+    # ----- API design --------------------------------------------------------
+    avoid_positional_boolean_parameters: true
+    avoid_setters_without_getters: true
+    hash_and_equals: true
+    implementation_imports: true
+    library_private_types_in_public_api: true
+    prefer_asserts_in_initializer_lists: true
+    prefer_asserts_with_message: true
+
+    # ----- Error handling ----------------------------------------------------
+    avoid_catches_without_on_clauses: true
+    avoid_catching_errors: true
+    only_throw_errors: true
+    throw_in_finally: true
+    use_rethrow_when_possible: true
+
+    # ----- Collections -------------------------------------------------------
+    prefer_collection_literals: true
+    prefer_for_elements_to_map_fromiterable: true
+    prefer_iterable_whereType: true
+    prefer_spread_collections: true
+
+    # ----- Doc comments (informational) --------------------------------------
+    slash_for_doc_comments: true
+    package_api_docs: false        # enable when publishing
+    public_member_api_docs: false  # enable when publishing

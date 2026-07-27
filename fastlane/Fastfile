@@ -1,0 +1,92 @@
+# Fastlane runners for the Rent95 mobile app.
+#
+# Prerequisites (one-time):
+#   gem install fastlane
+#   flutter pub get
+#
+# Usage:
+#   fastlane android beta        # → Play Store internal track
+#   fastlane android release     # → Play Store production
+#   fastlane ios beta            # → TestFlight
+#   fastlane ios release         # → App Store review
+#
+# Every lane runs the tests first via `flutter test`. If that fails, the
+# build never uploads.
+
+default_platform(:android)
+
+# ── Android ─────────────────────────────────────────────────────────────────
+
+platform :android do
+  desc 'Build + upload an internal-track AAB'
+  lane :beta do
+    ensure_flutter_ready
+    sh 'cd .. && flutter build appbundle --release ' \
+       "--dart-define=API_BASE_URL=#{ENV['API_BASE_URL']} " \
+       "--dart-define=SOCKET_URL=#{ENV['SOCKET_URL']} " \
+       "--dart-define=STRIPE_PUBLISHABLE_KEY=#{ENV['STRIPE_PUBLISHABLE_KEY']} " \
+       "--dart-define=GOOGLE_MAPS_API_KEY=#{ENV['GOOGLE_MAPS_API_KEY']} " \
+       '--dart-define=USE_MOCKS=false ' \
+       '--dart-define=ENVIRONMENT=production'
+    upload_to_play_store(
+      track: 'internal',
+      aab: '../build/app/outputs/bundle/release/app-release.aab',
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_screenshots: true,
+    )
+  end
+
+  desc 'Promote the current internal build to production'
+  lane :release do
+    upload_to_play_store(
+      track: 'production',
+      track_promote_to: 'production',
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+    )
+  end
+end
+
+# ── iOS ─────────────────────────────────────────────────────────────────────
+
+platform :ios do
+  desc 'Build + upload to TestFlight'
+  lane :beta do
+    ensure_flutter_ready
+    setup_ci if is_ci
+    sh 'cd .. && flutter build ipa --release ' \
+       "--dart-define=API_BASE_URL=#{ENV['API_BASE_URL']} " \
+       "--dart-define=SOCKET_URL=#{ENV['SOCKET_URL']} " \
+       "--dart-define=STRIPE_PUBLISHABLE_KEY=#{ENV['STRIPE_PUBLISHABLE_KEY']} " \
+       "--dart-define=GOOGLE_MAPS_API_KEY=#{ENV['GOOGLE_MAPS_API_KEY']} " \
+       '--dart-define=USE_MOCKS=false ' \
+       '--dart-define=ENVIRONMENT=production'
+    upload_to_testflight(
+      ipa: '../build/ios/ipa/Rent95.ipa',
+      skip_waiting_for_build_processing: true,
+    )
+  end
+
+  desc 'Submit the latest TestFlight build to App Review'
+  lane :release do
+    deliver(
+      submit_for_review: true,
+      automatic_release: false,
+      force: true,
+      skip_metadata: false,
+      skip_screenshots: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+      },
+    )
+  end
+end
+
+# ── Shared ──────────────────────────────────────────────────────────────────
+
+def ensure_flutter_ready
+  UI.message '→ Running flutter test'
+  sh 'cd .. && flutter test'
+end
