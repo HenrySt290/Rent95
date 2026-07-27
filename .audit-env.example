@@ -1,0 +1,34 @@
+# Copy to .audit-env, fill in with your production values, then run:
+#   ./scripts/preflight-audit.sh
+#
+# .audit-env is gitignored — never commit real credentials.
+
+# ---- Live endpoints ----
+API_HOST=https://api.rent95.app
+ADMIN_HOST=https://admin.rent95.app
+
+# ---- CORS allowlist ----
+EXPECTED_CORS_ORIGINS=https://admin.rent95.app,https://rent95.app
+BAD_TEST_ORIGIN=https://evil.example.com
+
+# ---- Stripe (READ-ONLY token if possible) ----
+# Fill in your real values here. DO NOT paste sk_live_… into git —
+# GitHub's secret scanner will block the push anyway.
+STRIPE_SECRET_KEY=<PASTE_YOUR_STRIPE_SECRET_KEY_HERE>
+STRIPE_WEBHOOK_ID=<PASTE_YOUR_STRIPE_WEBHOOK_ID_HERE>
+
+# ---- Cloudinary ----
+CLOUDINARY_CLOUD_NAME=<YOUR_CLOUD_NAME>
+CLOUDINARY_API_KEY=<YOUR_API_KEY>
+CLOUDINARY_API_SECRET=<YOUR_API_SECRET>
+
+# ---- Firebase (paste the SAME base64 value you set on the API's Fly secrets) ----
+FCM_SERVICE_ACCOUNT_JSON_BASE64=
+
+# ---- Fly ----
+FLY_APP_API=rent95-api
+FLY_APP_ADMIN=rent95-admin
+FLY_PG_APP=rent95-db
+
+# ---- Sentry (for the canary event) ----
+SENTRY_DSN=<https://YOUR_KEY@YOUR_HOST.ingest.sentry.io/YOUR_PROJECT>
