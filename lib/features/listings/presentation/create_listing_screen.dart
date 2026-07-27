@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../shared/components/photo_uploader_grid.dart';
 import '../../../shared/models/category.dart';
 import '../../../shared/models/listing.dart';
 import '../../categories/data/category_providers.dart';
@@ -198,34 +199,13 @@ class _CreateListingScreenState extends ConsumerState<CreateListingScreen> {
               const SizedBox(height: 16),
               const Text('Photos', style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8, runSpacing: 8,
-                children: [
-                  ..._images.map((url) => ClipRRect(
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                        child: Image.network(url, width: 80, height: 80, fit: BoxFit.cover),
-                      )),
-                  InkWell(
-                    onTap: () => setState(() {
-                      // TODO(images): swap for image_picker + Cloudinary signed upload.
-                      // For now we stub in a random unsplash URL so the API sees a
-                      // valid https:// image on submit.
-                      _images.add(
-                        'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&sig=${_images.length}',
-                      );
-                    }),
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
-                    child: Container(
-                      width: 80, height: 80,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: const Icon(Icons.add_a_photo_outlined, color: AppColors.textSecondary),
-                    ),
-                  ),
-                ],
+              PhotoUploaderGrid(
+                urls: _images,
+                onChange: (next) => setState(() {
+                  _images
+                    ..clear()
+                    ..addAll(next);
+                }),
               ),
             ],
           ),
