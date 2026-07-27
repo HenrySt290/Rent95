@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
+import 'core/network/socket_lifecycle.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,5 +15,18 @@ Future<void> main() async {
   //   Stripe.publishableKey = Env.stripePublishableKey;
   //   await Hive.initFlutter();
 
-  runApp(const ProviderScope(child: Rent95App()));
+  runApp(const ProviderScope(child: _AppBootstrap()));
+}
+
+/// Tiny wrapper widget whose only job is to spin up the [socketLifecycleProvider]
+/// so it starts watching auth state *before* any screen mounts. Without this,
+/// the socket controller wouldn't exist until something else `ref.watch`ed it.
+class _AppBootstrap extends ConsumerWidget {
+  const _AppBootstrap();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(socketLifecycleProvider);
+    return const Rent95App();
+  }
 }

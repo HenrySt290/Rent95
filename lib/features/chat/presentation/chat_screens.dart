@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/network/socket_client.dart';
+import '../../../core/network/socket_events.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../shared/components/empty_state.dart';
 import '../../../shared/models/message.dart';
@@ -14,8 +18,15 @@ final conversationsProvider = FutureProvider<List<Conversation>>((ref) {
   return ref.watch(chatRepositoryProvider).listConversations();
 });
 
-/// Live messages for a conversation. Uses a `StateNotifier` so we can add
-/// optimistic sends and (later) socket-pushed messages without re-fetching.
+/// Live messages for a conversation, blended from two sources:
+///
+///   1. **REST** — initial page fetched via `ChatRepository.listMessages`.
+///   2. **Socket** — every `message_received` event for this conversation is
+///      pushed on top of the existing list.
+///
+/// Optimistic sends are added immediately with a temp id and reconciled with
+/// the persisted record when the POST returns (or the socket echoes it back —
+/// whichever wins the race first).
 final messagesProvider = StateNotifierProvider.autoDispose
     .family<MessagesController, AsyncValue<List<ChatMessage>>, String>(
   (ref, conversationId) => MessagesController(ref, conversationId),
@@ -25,26 +36,101 @@ class MessagesController extends StateNotifier<AsyncValue<List<ChatMessage>>> {
   MessagesController(this._ref, this.conversationId)
       : super(const AsyncValue.loading()) {
     _load();
+    _subscribeToSocket();
+    _joinRoom();
   }
+
   final Ref _ref;
   final String conversationId;
 
+  StreamSubscription<IncomingMessage>? _messageSub;
+  StreamSubscription<SocketStatus>? _statusSub;
+  Timer? _typingTimer;
+
   Future<void> _load() async {
     try {
-      final list = await _ref
-          .read(chatRepositoryProvider)
-          .listMessages(conversationId);
+      final list = await _ref.read(chatRepositoryProvider).listMessages(conversationId);
       state = AsyncValue.data(list);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
   }
 
+  void _joinRoom() {
+    final client = _ref.read(socketClientProvider);
+    if (client.isConnected) {
+      client.joinConversation(conversationId);
+    } else {
+      // If the socket isn't up yet (still connecting on cold start), rejoin
+      // as soon as it becomes connected.
+      _statusSub = client.status$.listen((status) {
+        if (status == SocketStatus.connected) {
+          client.joinConversation(conversationId);
+        }
+      });
+    }
+  }
+
+  void _subscribeToSocket() {
+    _messageSub = _ref.read(socketClientProvider).messages$.listen((msg) {
+      if (msg.conversationId != conversationId) return;
+
+      final me = _ref.read(authControllerProvider).user?.id;
+      if (msg.senderId == me) {
+        // Server echoed back our own send. Try to reconcile the temp message
+        // if it's still in state; otherwise no-op (we'll have replaced it
+        // via the REST response already).
+        _reconcileOwnSend(msg);
+        return;
+      }
+      _append(_incomingToDomain(msg));
+    });
+  }
+
+  ChatMessage _incomingToDomain(IncomingMessage m) => ChatMessage(
+        id: m.id,
+        conversationId: m.conversationId,
+        senderId: m.senderId,
+        type: switch (m.type) {
+          'image' => MessageType.image,
+          'system' => MessageType.system,
+          _ => MessageType.text,
+        },
+        content: m.content,
+        mediaUrl: m.mediaUrl,
+        createdAt: m.createdAt,
+      );
+
+  void _append(ChatMessage msg) {
+    final current = state.value ?? const <ChatMessage>[];
+    // De-dup: if we've already got this exact id, skip. Otherwise append and
+    // keep list sorted by time (defensive — should already be sorted).
+    if (current.any((m) => m.id == msg.id)) return;
+    final next = [...current, msg]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    state = AsyncValue.data(next);
+  }
+
+  void _reconcileOwnSend(IncomingMessage msg) {
+    final current = state.value ?? const <ChatMessage>[];
+    // Find a temp message with matching content+sender that's within a
+    // short window of the server's timestamp. Replace it with the real one.
+    final match = current.indexWhere((m) =>
+        m.id.startsWith('temp_') &&
+        m.senderId == msg.senderId &&
+        m.content == msg.content);
+    if (match == -1) {
+      _append(_incomingToDomain(msg));
+      return;
+    }
+    final next = List<ChatMessage>.from(current)..[match] = _incomingToDomain(msg);
+    state = AsyncValue.data(next);
+  }
+
   Future<void> send(String text) async {
     if (text.trim().isEmpty) return;
     final current = state.value ?? const <ChatMessage>[];
 
-    // Optimistic tempMsg — replaced when the real send resolves.
+    // Optimistic tempMsg — replaced when the send resolves or the socket echoes.
     final tempId = 'temp_${DateTime.now().microsecondsSinceEpoch}';
     final me = _ref.read(authControllerProvider).user?.id ?? 'me';
     final optimistic = ChatMessage(
@@ -57,23 +143,56 @@ class MessagesController extends StateNotifier<AsyncValue<List<ChatMessage>>> {
     );
     state = AsyncValue.data([...current, optimistic]);
 
+    // Tell the server we stopped typing (send implies not typing).
+    _ref.read(socketClientProvider).stopTyping(conversationId);
+
     try {
-      final sent = await _ref
-          .read(chatRepositoryProvider)
-          .sendMessage(conversationId, text.trim());
+      final sent = await _ref.read(chatRepositoryProvider).sendMessage(conversationId, text.trim());
+      // Swap temp → real, unless the socket already did it.
+      final currentAfter = state.value ?? const <ChatMessage>[];
       state = AsyncValue.data([
-        for (final m in state.value ?? const <ChatMessage>[])
+        for (final m in currentAfter)
           if (m.id == tempId) sent else m,
       ]);
     } catch (_) {
       // Rollback the optimistic message on failure.
-      state = AsyncValue.data([
-        for (final m in state.value ?? const <ChatMessage>[])
-          if (m.id != tempId) m,
-      ]);
+      final currentAfter = state.value ?? const <ChatMessage>[];
+      state = AsyncValue.data([for (final m in currentAfter) if (m.id != tempId) m]);
     }
   }
+
+  /// Called on every keystroke — debounces "start typing" and schedules a
+  /// "stop typing" 3 s after the last press.
+  void reportTyping() {
+    _ref.read(socketClientProvider).startTyping(conversationId);
+    _typingTimer?.cancel();
+    _typingTimer = Timer(const Duration(seconds: 3), () {
+      _ref.read(socketClientProvider).stopTyping(conversationId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _typingTimer?.cancel();
+    _messageSub?.cancel();
+    _statusSub?.cancel();
+    // Best-effort tell the server we've left this room.
+    try {
+      _ref.read(socketClientProvider).leaveConversation(conversationId);
+    } catch (_) {}
+    super.dispose();
+  }
 }
+
+/// Emits whether the *other* party in this conversation is currently typing.
+final isOtherTypingProvider =
+    StreamProvider.autoDispose.family<bool, String>((ref, conversationId) {
+  final client = ref.watch(socketClientProvider);
+  final me = ref.watch(authControllerProvider).user?.id;
+  return client.typing$
+      .where((e) => e.conversationId == conversationId && e.userId != me)
+      .map((e) => e.typing);
+});
 
 class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
@@ -81,6 +200,10 @@ class ChatListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(conversationsProvider);
+    // Refresh the list whenever the socket pushes a new message, so
+    // "last message" + unread badges stay live without polling.
+    ref.watch(_conversationsAutoRefresher);
+
     return Scaffold(
       body: SafeArea(
         child: async.when(
@@ -112,7 +235,9 @@ class ChatListScreen extends ConsumerWidget {
                           child: Text(
                             c.otherUserName.characters.first,
                             style: const TextStyle(
-                                color: AppColors.primary, fontWeight: FontWeight.w700),
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                         title: Text(c.otherUserName,
@@ -153,6 +278,16 @@ class ChatListScreen extends ConsumerWidget {
   }
 }
 
+/// Side-effect provider that invalidates the conversations list whenever a
+/// message arrives via socket. Watched but not awaited by [ChatListScreen].
+final _conversationsAutoRefresher = Provider.autoDispose<void>((ref) {
+  final client = ref.watch(socketClientProvider);
+  final sub = client.messages$.listen((_) {
+    ref.invalidate(conversationsProvider);
+  });
+  ref.onDispose(sub.cancel);
+});
+
 class ChatDetailScreen extends ConsumerStatefulWidget {
   const ChatDetailScreen({super.key, required this.conversationId});
   final String conversationId;
@@ -183,6 +318,8 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
               .firstOrNull,
           orElse: () => null,
         );
+    final isTyping =
+        ref.watch(isOtherTypingProvider(widget.conversationId)).valueOrNull ?? false;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -212,8 +349,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
               children: [
                 Text(other ?? 'Chat',
                     style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-                const Text('Online',
-                    style: TextStyle(fontSize: 11, color: AppColors.success)),
+                _PresenceLine(isTyping: isTyping),
               ],
             ),
           ),
@@ -227,8 +363,11 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
             data: (list) => ListView.builder(
               controller: _scroll,
               padding: const EdgeInsets.all(16),
-              itemCount: list.length,
+              itemCount: list.length + (isTyping ? 1 : 0),
               itemBuilder: (_, i) {
+                if (isTyping && i == list.length) {
+                  return const _TypingBubble();
+                }
                 final m = list[i];
                 final mine = m.senderId == currentUserId;
                 return Align(
@@ -290,6 +429,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                     hintText: 'Type a message…',
                     border: InputBorder.none,
                   ),
+                  onChanged: (_) => ref
+                      .read(messagesProvider(widget.conversationId).notifier)
+                      .reportTyping(),
                 ),
               ),
               IconButton(
@@ -310,5 +452,96 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   }
 }
 
+class _PresenceLine extends ConsumerWidget {
+  const _PresenceLine({required this.isTyping});
+  final bool isTyping;
 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (isTyping) {
+      return const Text('typing…',
+          style: TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w500));
+    }
+    final status = ref.watch(socketStatusProvider).valueOrNull ?? SocketStatus.disconnected;
+    switch (status) {
+      case SocketStatus.connected:
+        return const Text('Online',
+            style: TextStyle(fontSize: 11, color: AppColors.success));
+      case SocketStatus.connecting:
+      case SocketStatus.reconnecting:
+        return const Text('Reconnecting…',
+            style: TextStyle(fontSize: 11, color: AppColors.warning));
+      case SocketStatus.disconnected:
+        return const Text('Offline',
+            style: TextStyle(fontSize: 11, color: AppColors.textSecondary));
+    }
+  }
+}
 
+/// Three-dot animated typing indicator bubble.
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble();
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: AppColors.border),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(16),
+            topRight: Radius.circular(16),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(16),
+          ),
+        ),
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (_, __) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (i) {
+                final t = (_c.value + i * 0.15) % 1.0;
+                final opacity = (0.35 + 0.65 * (1 - (t - 0.5).abs() * 2)).clamp(0.2, 1.0);
+                return Padding(
+                  padding: EdgeInsets.only(right: i < 2 ? 4 : 0),
+                  child: Opacity(
+                    opacity: opacity,
+                    child: Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: AppColors.textSecondary,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
