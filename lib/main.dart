@@ -3,16 +3,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
 import 'core/network/socket_lifecycle.dart';
+import 'core/services/stripe_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Real integrations (Firebase, Stripe, Hive) would be initialised here.
-  // Kept optional so the app still runs in mock mode without configuring them.
-  //
-  // Example (add once your keys and Firebase project are ready):
+  // Stripe SDK — safe to call unconditionally. If STRIPE_PUBLISHABLE_KEY is
+  // unset (mock mode) it's a friendly no-op and the checkout screen will
+  // surface a "not configured" message if the user reaches it.
+  await StripeService.instance.init();
+
+  // Real integrations left as clearly-marked TODOs:
   //   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  //   Stripe.publishableKey = Env.stripePublishableKey;
   //   await Hive.initFlutter();
 
   runApp(const ProviderScope(child: _AppBootstrap()));
