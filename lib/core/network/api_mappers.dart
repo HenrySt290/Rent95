@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../../shared/models/listing.dart';
+import 'safe_json.dart';
 
 /// API-shape mappers.
 ///
@@ -11,59 +12,112 @@ import '../../shared/models/listing.dart';
 ///
 /// They live in `core/network/` (not the shared models) because they're
 /// coupled to the wire format, not the domain shape.
+///
+/// **Safety contract (see `safe_json.dart` for the primitives):**
+///
+/// 1. Every field access goes through a type-safe coercer that returns a
+///    default on shape mismatch instead of throwing. A hostile CDN cannot
+///    freeze the UI by shipping a `bool` where we expect a `String`.
+///
+/// 2. Numeric fields (price, deposit, rating) are clamped to `[min, max]`
+///    at the mapper. A negative price cannot enter our domain model.
+///
+/// 3. List-of-listings is mapped with `mapListSafely`: a single corrupted
+///    record is dropped and logged, the rest of the page still renders.
+///
+/// 4. Enum-shaped strings fall back to a safe default. An unknown
+///    `listingType` becomes `rent`, not a crash.
 
 /// Convert a Prisma-serialized `Product` (with its `media`, `location`,
 /// `owner`, `category` relations) into the app's [Listing] model.
+///
+/// Never throws. If the input is so corrupted that even ID and title are
+/// missing, returns a placeholder [Listing] with `status = removed` so the
+/// UI can skip it during render. Callers should still prefer
+/// [mapListSafely] to drop these entirely.
 Listing listingFromApi(Map<String, dynamic> j) {
-  final owner = (j['owner'] as Map?)?.cast<String, dynamic>();
-  final location = (j['location'] as Map?)?.cast<String, dynamic>();
-  final media = (j['media'] as List?) ?? const [];
+  final owner = asMapOrNull(j['owner']);
+  final location = asMapOrNull(j['location']);
 
   return Listing(
-    id: j['id'] as String,
-    ownerId: j['ownerId'] as String,
-    ownerName: (owner?['fullName'] as String?) ?? (j['ownerName'] as String?) ?? '',
-    ownerAvatarUrl: owner?['profileImageUrl'] as String?,
-    title: j['title'] as String,
-    description: (j['description'] as String?) ?? '',
-    categoryId: j['categoryId'] as String,
-    subcategoryId: j['subcategoryId'] as String?,
-    listingType: listingTypeFromString((j['listingType'] as String?) ?? 'rent'),
-    price: (j['price'] as num).toDouble(),
-    priceUnit: priceUnitFromString((j['priceUnit'] as String?) ?? 'day'),
-    securityDeposit: (j['securityDeposit'] as num?)?.toDouble() ?? 0,
-    currency: (j['currency'] as String?) ?? 'USD',
-    quantity: (j['quantity'] as num?)?.toInt() ?? 1,
-    images: media
-        .map((m) => (m as Map).cast<String, dynamic>()['url'] as String)
-        .toList(growable: false),
-    location: ListingLocation(
-      city: (location?['city'] as String?) ?? '',
-      country: (location?['country'] as String?) ?? '',
-      state: location?['state'] as String?,
-      address: location?['address'] as String?,
-      postalCode: location?['postalCode'] as String?,
-      latitude: (location?['latitude'] as num?)?.toDouble(),
-      longitude: (location?['longitude'] as num?)?.toDouble(),
+    // ID is the one field we can't sanely default — an empty ID would
+    // break every downstream reference. Skip via mapListSafely instead.
+    id: asString(j['id']),
+    ownerId: asString(j['ownerId']),
+    ownerName: asStringOrNull(owner?['fullName']) ??
+        asStringOrNull(j['ownerName']) ??
+        '',
+    ownerAvatarUrl: asStringOrNull(owner?['profileImageUrl']),
+    title: asString(j['title'], fallback: '(untitled)'),
+    description: asString(j['description']),
+    categoryId: asString(j['categoryId']),
+    subcategoryId: asStringOrNull(j['subcategoryId']),
+    listingType: listingTypeFromString(asString(j['listingType'], fallback: 'rent')),
+    // Prices are clamped to non-negative and a sane ceiling.
+    // A compromised feed sending `-500` or `1e30` cannot poison the model.
+    price: asDouble(j['price'], minValue: 0, maxValue: 1e9),
+    priceUnit: priceUnitFromString(asString(j['priceUnit'], fallback: 'day')),
+    securityDeposit: asDouble(j['securityDeposit'], minValue: 0, maxValue: 1e9),
+    currency: asString(j['currency'], fallback: 'USD'),
+    quantity: asInt(j['quantity'], fallback: 1, minValue: 0, maxValue: 100000),
+    // Media list capped so a compromised feed can't inject a million URLs.
+    images: mapListSafely<String>(
+      j['media'],
+      (m) {
+        final url = asStringOrNull(m['url']);
+        if (url == null) throw const FormatException('missing url');
+        return url;
+      },
+      maxLength: 24,
+      context: 'listing.media',
     ),
-    customAttributes: ((j['customAttributes'] as Map?)?.cast<String, dynamic>()) ?? const {},
-    status: listingStatusFromString((j['status'] as String?) ?? 'active'),
-    ratingAverage: (j['ratingAverage'] as num?)?.toDouble() ?? 0,
-    reviewCount: (j['reviewCount'] as num?)?.toInt() ?? 0,
-    viewCount: (j['viewCount'] as num?)?.toInt() ?? 0,
-    favoriteCount: (j['favoriteCount'] as num?)?.toInt() ?? 0,
-    deliveryOptions: ((j['deliveryOptions'] as List?) ?? const ['pickup'])
-        .map((e) => e.toString())
-        .toList(growable: false),
+    location: ListingLocation(
+      city: asString(location?['city']),
+      country: asString(location?['country']),
+      state: asStringOrNull(location?['state']),
+      address: asStringOrNull(location?['address']),
+      postalCode: asStringOrNull(location?['postalCode']),
+      latitude: _latOrNull(location?['latitude']),
+      longitude: _lonOrNull(location?['longitude']),
+    ),
+    customAttributes: asMap(j['customAttributes']),
+    status: listingStatusFromString(asString(j['status'], fallback: 'active')),
+    ratingAverage: asDouble(j['ratingAverage'], minValue: 0, maxValue: 5),
+    reviewCount: asInt(j['reviewCount'], minValue: 0),
+    viewCount: asInt(j['viewCount'], minValue: 0),
+    favoriteCount: asInt(j['favoriteCount'], minValue: 0),
+    deliveryOptions: () {
+      final opts = asStringList(j['deliveryOptions'], maxLength: 8);
+      return opts.isEmpty ? const <String>['pickup'] : opts;
+    }(),
   );
 }
 
+double? _latOrNull(Object? v) {
+  if (v == null) return null;
+  final n = asDouble(v, minValue: -90, maxValue: 90, fallback: double.nan);
+  return n.isNaN ? null : n;
+}
+
+double? _lonOrNull(Object? v) {
+  if (v == null) return null;
+  final n = asDouble(v, minValue: -180, maxValue: 180, fallback: double.nan);
+  return n.isNaN ? null : n;
+}
+
 /// Decode a list of listings from a paginated `GET /api/products` response.
+///
+/// Uses [mapListSafely] so a poisoned element is dropped, not fatal.
+/// Also drops any element whose ID resolved to empty (see mapper contract).
 List<Listing> listingsFromEnvelope(Response<dynamic> response) {
   final body = response.data;
   final raw = body is Map ? body['data'] : body;
-  if (raw is! List) return const [];
-  return raw
-      .map((e) => listingFromApi((e as Map).cast<String, dynamic>()))
-      .toList(growable: false);
+  final all = mapListSafely<Listing>(
+    raw,
+    listingFromApi,
+    maxLength: 200,
+    context: 'GET /products',
+  );
+  // Belt-and-braces: strip any placeholders (empty id) that survived.
+  return all.where((l) => l.id.isNotEmpty).toList(growable: false);
 }
