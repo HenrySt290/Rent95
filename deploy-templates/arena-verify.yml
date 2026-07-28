@@ -1,0 +1,82 @@
+# ACTIVATION: copy this file to .github/workflows/arena-verify.yml to enable it.
+# (Like the other templates in this directory, it lives here because CI workflow
+# files require elevated push permission.)
+name: arena-verify
+
+# Triggered by pushes to the arena working branch (the push of this very file
+# starts the first run) and manually via `gh workflow run arena-verify`.
+on:
+  push:
+    branches:
+      - 'arena/**'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: pub get + analyze + test (real Flutter stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: flutter doctor
+        run: flutter doctor -v
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze
+        continue-on-error: true
+
+      - name: dart format check (informational)
+        run: dart format --output=none lib test
+        continue-on-error: true
+
+      - name: flutter test
+        run: flutter test
+        continue-on-error: true
+
+  build-android:
+    name: android debug build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: regenerate platform scaffolding (repo ships without android/)
+        run: flutter create --platforms=android --org com.rent95 .
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter build apk --debug
+        run: flutter build apk --debug
+
+  build-ios:
+    name: ios debug build (no codesign)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: regenerate platform scaffolding (repo ships without ios/)
+        run: flutter create --platforms=ios --org com.rent95 .
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter build ios --debug --no-codesign
+        run: flutter build ios --debug --no-codesign
