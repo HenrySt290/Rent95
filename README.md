@@ -145,6 +145,11 @@ flutter run \
 flutter test
 ```
 
+### Troubleshooting
+
+- **`flutter run` says no `android/` / `ios/` folder exists** → you skipped step 2: `flutter create --platforms=android,ios,web --org com.rent95 .`
+- **`flutter pub get` fails with "intl is pinned … version solving failed"** → your Flutter SDK is older than the `intl` pin in `pubspec.yaml`. Run `flutter upgrade` (intl 0.20.2 is required by `flutter_localizations` on current stable).
+
 ### 6. Build for release
 
 ```bash
